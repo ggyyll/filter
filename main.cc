@@ -404,7 +404,6 @@ static void WritePacketToFile(AVPacket *pkt, FILE *fp)
     fwrite(pkt->data, 1, pkt->size, fp);
 }
 
-
 static int write_frame_file(StreamContext *in, StreamContext *out, int stream_index, AVFrame *frame)
 {
     AVStream *in_stream = nullptr;
@@ -469,9 +468,9 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
             printf("pts %07ld dts %07ld duration %07ld %07ld \t%s\n", packet->pts, packet->dts, packet->duration, ++out->video_count, av_get_media_type_string(out_codec_ctx->codec_type));
         }
 
-        WritePacketToFile(packet,out->pkt_fp);
+        WritePacketToFile(packet, out->pkt_fp);
         int ret = av_interleaved_write_frame(out->fmt_ctx, packet);
-        if(ret != 0)
+        if (ret != 0)
         {
             printf("av_interleaved_write_frame failed\n");
         }
@@ -674,6 +673,12 @@ int main(int argc, char *argv[])
     write_frame_file(&in, &out, in.v_stream_index, nullptr);
 
     av_write_trailer(out.fmt_ctx);
+
+    /* close output */
+    if (out.fmt_ctx && !(out.fmt_ctx->oformat->flags & AVFMT_NOFILE))
+        avio_closep(&out.fmt_ctx->pb);
+    avformat_free_context(out.fmt_ctx);
+
     printf("read packet %ld write packet %ld filter count %ld\n", video_count, out.video_count, out.filter_video_count);
     return 0;
 }
