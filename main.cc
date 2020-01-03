@@ -674,10 +674,10 @@ int main(int argc, char *argv[])
 
     av_write_trailer(out.fmt_ctx);
 
-    /* close output */
-    if (out.fmt_ctx && !(out.fmt_ctx->oformat->flags & AVFMT_NOFILE))
-        avio_closep(&out.fmt_ctx->pb);
-    avformat_free_context(out.fmt_ctx);
+     //close output 
+    //if (out.fmt_ctx && !(out.fmt_ctx->oformat->flags & AVFMT_NOFILE))
+        //avio_closep(&out.fmt_ctx->pb);
+    //avformat_free_context(out.fmt_ctx);
 
     printf("read packet %ld write packet %ld filter count %ld\n", video_count, out.video_count, out.filter_video_count);
     return 0;
