@@ -299,11 +299,6 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
             break;
     }
 
-    if (oc->oformat->flags & AVFMT_GLOBALHEADER)
-    {
-        c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    }
-
     status = avcodec_open2(c, *codec, nullptr);
     assert(status >= 0);
     status = avcodec_parameters_from_context(stream->codecpar, c);
@@ -313,6 +308,10 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
         printf("audio smaple fmt %s %d %d\n", av_get_sample_fmt_name(c->sample_fmt), c->channels, c->frame_size);
         out->fifo = av_audio_fifo_alloc(c->sample_fmt, c->channels, c->frame_size);
         assert(out->fifo);
+    }
+    if (oc->oformat->flags & AVFMT_GLOBALHEADER)
+    {
+        c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 }
 
@@ -612,23 +611,22 @@ void decoding_packet_write_packet(StreamContext *in, StreamContext *out, AVPacke
     }
 }
 
-void flush_stream_context(StreamContext *in, StreamContext *out)
-{
-    AVPacket pkt;
-    pkt.stream_index = in->a_stream_index;
-    pkt.size = 0;
-    pkt.data = nullptr;
-    decoding_packet_write_packet(in, out, &pkt);
-    pkt.stream_index = in->v_stream_index;
-    decoding_packet_write_packet(in, out, &pkt);
-    write_frame_file(in, out, in->v_stream_index, nullptr);
-}
-
 namespace
 {
 std::function<void(int)> shutdown_handler;
 void signal_handler(int signal) { shutdown_handler(signal); }
 }  // namespace
+
+void flush_stream_context(StreamContext *in, StreamContext *out, AVPacket *pkt)
+{
+    pkt->size = 0;
+    pkt->data = NULL;
+    decoding_packet_write_packet(in, out, pkt);
+    pkt->stream_index = in->v_stream_index;
+    decoding_packet_write_packet(in, out, pkt);
+    write_frame_file(in, out, in->v_stream_index, nullptr);
+    av_interleaved_write_frame(out->fmt_ctx, NULL);
+}
 
 int main(int argc, char *argv[])
 {
@@ -659,7 +657,7 @@ int main(int argc, char *argv[])
     auto filter_exit = make_scoped_exit([&]() { destory_filter_context(in, out); });
     //
     printf("%s\n", parting_line.data());
-    // test only
+
     out.fp = fopen("test.yuv", "wb");
     out.pkt_fp = fopen("pkt.h264", "wb");
     assert(out.fp && out.pkt_fp);
@@ -694,6 +692,7 @@ int main(int argc, char *argv[])
             continue;
         }
     }
+    flush_stream_context(&in, &out, pkt);
     av_write_trailer(out.fmt_ctx);
     printf("read packet %ld write packet %ld filter count %ld\n", video_count, out.video_count, out.filter_video_count);
     return 0;
