@@ -69,10 +69,24 @@ static void destory_filter_context(const StreamContext &in, const StreamContext 
     av_free(out.filter_ctx);
 }
 
-static void destory_stream_context(StreamContext *ctx)
+static void destory_in_context(StreamContext *ctx)
 {
     destory_codec_context(ctx->a_codec_ctx);
     destory_codec_context(ctx->v_codec_ctx);
+    avformat_close_input(&ctx->fmt_ctx);
+    avformat_free_context(ctx->fmt_ctx);
+}
+
+static void destory_out_context(StreamContext *ctx)
+{
+    destory_codec_context(ctx->a_codec_ctx);
+    destory_codec_context(ctx->v_codec_ctx);
+
+    //close output
+    avformat_close_input(&ctx->fmt_ctx);
+    if (ctx->fmt_ctx && !(ctx->fmt_ctx->oformat->flags & AVFMT_NOFILE))
+        avio_closep(&ctx->fmt_ctx->pb);
+    avformat_free_context(ctx->fmt_ctx);
 }
 
 static void write_yuv_frame_to_file(AVFrame *frame, FILE *fp)
@@ -183,7 +197,8 @@ static void init_filter_ctx(StreamContext *in, StreamContext *out)
 
         if (i == in->v_stream_index)
         {
-            const char *filter_spec = " drawbox=100:200:200:60:red@0.5:t=1"; /* passthrough (dummy) filter for video */
+            //const char *filter_spec = " drawbox=:200:200:60:red@0.5:t=1"; [> passthrough (dummy) filter for video <]
+            const char *filter_spec = "null";
             init_filter(&filter_ctx[i], in->v_codec_ctx, out->v_codec_ctx, filter_spec);
         }
         else if (i == in->a_stream_index)
@@ -284,6 +299,11 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
             break;
     }
 
+    if (oc->oformat->flags & AVFMT_GLOBALHEADER)
+    {
+        c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+
     status = avcodec_open2(c, *codec, nullptr);
     assert(status >= 0);
     status = avcodec_parameters_from_context(stream->codecpar, c);
@@ -293,11 +313,6 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
         printf("audio smaple fmt %s %d %d\n", av_get_sample_fmt_name(c->sample_fmt), c->channels, c->frame_size);
         out->fifo = av_audio_fifo_alloc(c->sample_fmt, c->channels, c->frame_size);
         assert(out->fifo);
-    }
-
-    if (oc->oformat->flags & AVFMT_GLOBALHEADER)
-    {
-        c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 }
 
@@ -334,16 +349,16 @@ void init_encoder(StreamContext *in, StreamContext *out)
     avformat_alloc_output_context2(&oc, NULL, NULL, out->filename.data());
     AVOutputFormat *fmt = oc->oformat;
     AVCodec *audio_codec = nullptr, *video_codec = nullptr;
-
     out->fmt_ctx = oc;
 
     if (fmt->video_codec != AV_CODEC_ID_NONE)
     {
-        open_encoder_codec(in, out, &video_codec, in->v_codec_ctx->codec_id);
+        //open_encoder_codec(in, out, &video_codec, in->v_codec_ctx->codec_id);
+        open_encoder_codec(in, out, &video_codec, fmt->video_codec);
     }
     if (fmt->audio_codec != AV_CODEC_ID_NONE)
     {
-        open_encoder_codec(in, out, &audio_codec, in->a_codec_ctx->codec_id);
+        open_encoder_codec(in, out, &audio_codec, fmt->audio_codec);
     }
 
     av_dump_format(oc, 0, out->filename.data(), 1);
@@ -428,11 +443,6 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
         out_stream = out->v_stream;
         in_codec_ctx = in->v_codec_ctx;
         out_codec_ctx = out->v_codec_ctx;
-        if (frame)
-        {
-            write_yuv_frame_to_file(frame, out->fp);
-            out->filter_video_count++;
-        }
     }
     else
     {
@@ -445,9 +455,14 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
         return status;
     }
 
-    AVPacket *packet = av_packet_alloc();
+    AVPacket pkt;
+    pkt.data = nullptr;
+    pkt.size = 0;
+    av_init_packet(&pkt);
+    AVPacket *packet = &pkt;
     assert(packet);
-    auto pkt_exit = make_scoped_exit([&]() { av_packet_free(&packet); });
+    //auto pkt_exit = make_scoped_exit([&]() { av_packet_free(&packet); });
+
     while (true)
     {
         status = avcodec_receive_packet(out_codec_ctx, packet);
@@ -455,6 +470,7 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
         {
             break;
         }
+        auto pkt_unref = make_scoped_exit([&]() { av_packet_unref(packet); });
         packet->stream_index = stream_index;
         av_packet_rescale_ts(packet, in_codec_ctx->time_base, out_codec_ctx->time_base);
         av_packet_rescale_ts(packet, out_codec_ctx->time_base, out_stream->time_base);
@@ -550,6 +566,7 @@ void decoding_video_packet_write_frame(StreamContext *in, StreamContext *out, AV
             break;
         }
         auto frame_unref = make_scoped_exit([&]() { av_frame_unref(filter_frame); });
+        write_yuv_frame_to_file(filter_frame, out->fp);
         filter_frame->pict_type = AV_PICTURE_TYPE_NONE;
         write_frame_file(in, out, in->v_stream_index, filter_frame);
     }
@@ -595,6 +612,18 @@ void decoding_packet_write_packet(StreamContext *in, StreamContext *out, AVPacke
     }
 }
 
+void flush_stream_context(StreamContext *in, StreamContext *out)
+{
+    AVPacket pkt;
+    pkt.stream_index = in->a_stream_index;
+    pkt.size = 0;
+    pkt.data = nullptr;
+    decoding_packet_write_packet(in, out, &pkt);
+    pkt.stream_index = in->v_stream_index;
+    decoding_packet_write_packet(in, out, &pkt);
+    write_frame_file(in, out, in->v_stream_index, nullptr);
+}
+
 namespace
 {
 std::function<void(int)> shutdown_handler;
@@ -618,17 +647,19 @@ int main(int argc, char *argv[])
     StreamContext out;
     in.filename = argv[1];
     out.filename = argv[2];
-    std::string space_line(50, '-');
-
+    std::string parting_line(50, '-');
+    //
     init_decoder(&in);
-    auto in_exit = make_scoped_exit([&]() { destory_stream_context(&in); });
-    printf("%s\n", space_line.data());
+    auto in_exit = make_scoped_exit([&]() { destory_in_context(&in); });
+
     init_encoder(&in, &out);
-    auto out_exit = make_scoped_exit([&]() { destory_stream_context(&out); });
+    auto out_exit = make_scoped_exit([&]() { destory_out_context(&out); });
+
     init_filter_ctx(&in, &out);
     auto filter_exit = make_scoped_exit([&]() { destory_filter_context(in, out); });
-    printf("%s\n", space_line.data());
-
+    //
+    printf("%s\n", parting_line.data());
+    // test only
     out.fp = fopen("test.yuv", "wb");
     out.pkt_fp = fopen("pkt.h264", "wb");
     assert(out.fp && out.pkt_fp);
@@ -663,22 +694,7 @@ int main(int argc, char *argv[])
             continue;
         }
     }
-    pkt->stream_index = in.a_stream_index;
-    pkt->size = 0;
-    pkt->data = nullptr;
-    decoding_packet_write_packet(&in, &out, pkt);
-    pkt->stream_index = in.v_stream_index;
-    decoding_packet_write_packet(&in, &out, pkt);
-    //write_frame_file(&in, &out, in.a_stream_index, nullptr);
-    write_frame_file(&in, &out, in.v_stream_index, nullptr);
-
     av_write_trailer(out.fmt_ctx);
-
-     //close output 
-    //if (out.fmt_ctx && !(out.fmt_ctx->oformat->flags & AVFMT_NOFILE))
-        //avio_closep(&out.fmt_ctx->pb);
-    //avformat_free_context(out.fmt_ctx);
-
     printf("read packet %ld write packet %ld filter count %ld\n", video_count, out.video_count, out.filter_video_count);
     return 0;
 }
