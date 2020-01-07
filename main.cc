@@ -197,14 +197,14 @@ static void init_filter_ctx(StreamContext *in, StreamContext *out)
 
         if (i == in->v_stream_index)
         {
-            //const char *filter_spec = " drawbox=:200:200:60:red@0.5:t=1"; [> passthrough (dummy) filter for video <]
-            const char *filter_spec = "null";
+            const char *filter_spec = " drawbox=100:200:200:60:red@0.5:t=1";
+            //const char *filter_spec = "null";
             init_filter(&filter_ctx[i], in->v_codec_ctx, out->v_codec_ctx, filter_spec);
         }
         else if (i == in->a_stream_index)
         {
             printf(" audio filter index %d\n", i);
-            const char *filter_spec = "anull"; /* passthrough (dummy) filter for audio */
+            const char *filter_spec = "anull"; 
             init_filter(&filter_ctx[i], in->a_codec_ctx, out->a_codec_ctx, filter_spec);
         }
     }
@@ -424,7 +424,7 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
     AVStream *out_stream = nullptr;
     AVCodecContext *in_codec_ctx = nullptr;
     AVCodecContext *out_codec_ctx = nullptr;
-    if (stream_index == in->a_stream_index)
+    if (stream_index == out->a_stream_index)
     {
         in_stream = in->a_stream;
         out_stream = out->a_stream;
@@ -436,7 +436,7 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
             out->audio_pts += frame->nb_samples;
         }
     }
-    else if (stream_index == in->v_stream_index)
+    else if (stream_index == out->v_stream_index)
     {
         in_stream = in->v_stream;
         out_stream = out->v_stream;
@@ -474,21 +474,17 @@ static int write_frame_file(StreamContext *in, StreamContext *out, int stream_in
         av_packet_rescale_ts(packet, in_codec_ctx->time_base, out_codec_ctx->time_base);
         av_packet_rescale_ts(packet, out_codec_ctx->time_base, out_stream->time_base);
 
-        if (stream_index == in->a_stream_index)
+        if (stream_index == out->a_stream_index)
         {
             printf("\t\t\t\t\t\t\t\t\tpts %07ld dts %07ld duration %07ld %07ld \t%s\n", packet->pts, packet->dts, packet->duration, ++out->audio_count, av_get_media_type_string(out_codec_ctx->codec_type));
         }
-        else if (stream_index == in->v_stream_index)
+        else if (stream_index == out->v_stream_index)
         {
             printf("pts %07ld dts %07ld duration %07ld %07ld \t%s\n", packet->pts, packet->dts, packet->duration, ++out->video_count, av_get_media_type_string(out_codec_ctx->codec_type));
         }
 
         WritePacketToFile(packet, out->pkt_fp);
-        int ret = av_interleaved_write_frame(out->fmt_ctx, packet);
-        if (ret != 0)
-        {
-            printf("av_interleaved_write_frame failed\n");
-        }
+        av_interleaved_write_frame(out->fmt_ctx, packet);
     }
     return 0;
 }
@@ -541,25 +537,25 @@ void decoding_audio_packet_write_frame(StreamContext *in, StreamContext *out, AV
                 av_frame_free(&frame);
                 break;
             }
-            write_frame_file(in, out, in->a_stream_index, frame);
+            write_frame_file(in, out, out->a_stream_index, frame);
         }
     }
 }
 
 void decoding_video_packet_write_frame(StreamContext *in, StreamContext *out, AVFrame *f)
 {
-    int stream_index = in->v_stream_index;
-    assert(out->filter_ctx[stream_index].buffersrc_ctx);
-    int status = av_buffersrc_add_frame_flags(out->filter_ctx[stream_index].buffersrc_ctx, f, 0);
+    int filter_index = in->v_stream_index;
+    assert(out->filter_ctx[filter_index].buffersrc_ctx);
+    int status = av_buffersrc_add_frame_flags(out->filter_ctx[filter_index].buffersrc_ctx, f, 0);
     assert(status >= 0);
     while (true)
     {
         AVFrame *filter_frame = av_frame_alloc();
         assert(filter_frame);
-        assert(out->filter_ctx->buffersink_ctx);
+        assert(out->filter_ctx[filter_index].buffersink_ctx);
         auto frame_exit = make_scoped_exit([&]() { av_frame_free(&filter_frame); });
         //printf("%p video stream_index %d\n", out->filter_ctx[stream_index].buffersink_ctx, stream_index);
-        status = av_buffersink_get_frame(out->filter_ctx[stream_index].buffersink_ctx, filter_frame);
+        status = av_buffersink_get_frame(out->filter_ctx[filter_index].buffersink_ctx, filter_frame);
         if (status < 0)
         {
             break;
@@ -567,7 +563,7 @@ void decoding_video_packet_write_frame(StreamContext *in, StreamContext *out, AV
         auto frame_unref = make_scoped_exit([&]() { av_frame_unref(filter_frame); });
         write_yuv_frame_to_file(filter_frame, out->fp);
         filter_frame->pict_type = AV_PICTURE_TYPE_NONE;
-        write_frame_file(in, out, in->v_stream_index, filter_frame);
+        write_frame_file(in, out, out->v_stream_index, filter_frame);
     }
 }
 
@@ -624,7 +620,7 @@ void flush_stream_context(StreamContext *in, StreamContext *out, AVPacket *pkt)
     decoding_packet_write_packet(in, out, pkt);
     pkt->stream_index = in->v_stream_index;
     decoding_packet_write_packet(in, out, pkt);
-    write_frame_file(in, out, in->v_stream_index, nullptr);
+    write_frame_file(in, out, out->v_stream_index, nullptr);
     av_interleaved_write_frame(out->fmt_ctx, NULL);
 }
 
@@ -680,7 +676,7 @@ int main(int argc, char *argv[])
         if (pkt->stream_index == in.a_stream_index)
         {
             //printf("audio packet %ld\n", ++audio_count);
-            //decoding_packet_write_packet(&in, &out, pkt);
+            decoding_packet_write_packet(&in, &out, pkt);
         }
         else if (pkt->stream_index == in.v_stream_index)
         {
