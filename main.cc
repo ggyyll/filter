@@ -279,7 +279,6 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
             break;
 
         case AVMEDIA_TYPE_VIDEO:
-            c->codec_id = codec_id;
             c->width = in->v_codec_ctx->width;
             c->height = in->v_codec_ctx->height;
             c->sample_aspect_ratio = in->v_codec_ctx->sample_aspect_ratio;
