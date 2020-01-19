@@ -81,7 +81,10 @@ static void destory_out_context(StreamContext *ctx)
 {
     destory_codec_context(ctx->a_codec_ctx);
     destory_codec_context(ctx->v_codec_ctx);
-
+    if(ctx->fifo)
+    {
+        av_audio_fifo_free(ctx->fifo);
+    }
     //close output
     avformat_close_input(&ctx->fmt_ctx);
     if (ctx->fmt_ctx && !(ctx->fmt_ctx->oformat->flags & AVFMT_NOFILE))
@@ -302,7 +305,7 @@ static void open_encoder_codec(StreamContext *in, StreamContext *out, AVCodec **
     assert(status >= 0);
     status = avcodec_parameters_from_context(stream->codecpar, c);
     assert(status >= 0);
-    if ((*codec)->type)
+    if ((*codec)->type == AVMEDIA_TYPE_AUDIO)
     {
         printf("audio smaple fmt %s %d %d\n", av_get_sample_fmt_name(c->sample_fmt), c->channels, c->frame_size);
         out->fifo = av_audio_fifo_alloc(c->sample_fmt, c->channels, c->frame_size);
